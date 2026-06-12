@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LED Traffic Light Signal Detector</title>
+    <title>LED Signal Transition Detector</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -33,7 +33,6 @@
             border-radius: 8px;
             background-color: #000;
         }
-        /* Reticle to help the user aim at the traffic light */
         .reticle {
             position: absolute;
             top: 50%;
@@ -62,20 +61,30 @@
         #status { font-size: 1.1em; color: #aaa; margin: 10px 0; }
         
         #alert-box {
-            font-size: 26px;
+            font-size: 24px;
             font-weight: bold;
             padding: 25px;
             border-radius: 8px;
             margin-top: 20px;
             display: none;
         }
+        #history {
+            margin-top: 20px;
+            text-align: left;
+            background: #2a2a35;
+            padding: 15px;
+            border-radius: 8px;
+            max-height: 120px;
+            overflow-y: auto;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>LED Signal Aspect Detector v1.1</h2>
-    <p>Align the target circle directly over the LED aspect.</p>
+    <h2>Signal Aspect Change Detector</h2>
+    <p>Aims the reticle at the LED. Alerts trigger only when the aspect transitions.</p>
     
     <div class="video-wrapper">
         <video id="video" autoplay playsinline></video>
@@ -90,6 +99,8 @@
 
     <div id="status">Status: Idle</div>
     <div id="alert-box"></div>
+    
+    <div id="history"><strong>Transition Log:</strong><br></div>
 </div>
 
 <audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg" preload="auto"></audio>
@@ -103,12 +114,17 @@
     const statusDiv = document.getElementById('status');
     const alertBox = document.getElementById('alert-box');
     const alertSound = document.getElementById('alertSound');
+    const historyDiv = document.getElementById('history');
 
     let isMonitoring = false;
     let streamRef = null;
     let animationFrameId = null;
-    let lastSpokenAspect = ""; 
-    let aspectDurationCounter = 0; // Helps filter out flickering noise
+
+    // --- State Machine Variables ---
+    let currentStableAspect = "UNKNOWN"; 
+    let pendingAspect = "NONE";
+    let stabilityCounter = 0;
+    const FRAMES_TO_CONFIRM = 5; // Signal must be stable for 5 frames (~80ms) to log a change
 
     async function startMonitoring() {
         if (isMonitoring) return;
@@ -118,12 +134,11 @@
         statusDiv.innerText = "Status: Accessing camera...";
 
         try {
-            // Note: Removed mirror scaling (scaleX) to keep orientation true for physical layout tracking
             streamRef = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } 
             });
             video.srcObject = streamRef;
-            statusDiv.innerText = "Status: Monitoring Signal Aspects...";
+            statusDiv.innerText = "Status: Running. Awaiting initial state...";
             analyzeFrame();
         } catch (err) {
             statusDiv.innerText = "Error: Camera unavailable.";
@@ -139,7 +154,7 @@
         
         alertSound.pause();
         alertBox.style.display = 'none';
-        lastSpokenAspect = "";
+        currentStableAspect = "UNKNOWN";
         resetUI();
     }
 
@@ -157,11 +172,10 @@
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            // Define a small 10x10 pixel bounding area at the center to sample the light safely
+            // Sample center 10x10 area
             const size = 10;
             const startX = Math.floor(canvas.width / 2) - (size / 2);
             const startY = Math.floor(canvas.height / 2) - (size / 2);
-            
             const imgData = ctx.getImageData(startX, startY, size, size).data;
             
             let totalR = 0, totalG = 0, totalB = 0;
@@ -173,91 +187,89 @@
                 totalB += imgData[i+2];
             }
 
-            // Average color inside our target reticle
             const r = totalR / pixelCount;
             const g = totalG / pixelCount;
             const b = totalB / pixelCount;
 
-            processLEDAspect(r, g, b);
+            detectRawColor(r, g, b);
         }
 
         animationFrameId = requestAnimationFrame(analyzeFrame);
     }
 
-    function processLEDAspect(r, g, b) {
-        let currentAspect = "NONE";
+    function detectRawColor(r, g, b) {
+        let rawAspect = "OFF/DARK";
 
-        // Advanced color-ratio thresholds for intensely bright LED emissions
-        if (r > 140 && g < 75 && b < 75) {
-            currentAspect = "RED";
+        // Balanced color thresholds for high-output LED emitters
+        if (r > 130 && g < 75 && b < 75) {
+            rawAspect = "RED";
         } 
-        else if (g > 140 && r < 90 && b < 120) {
-            currentAspect = "GREEN";
+        else if (g > 130 && r < 95 && b < 120) {
+            rawAspect = "GREEN";
         } 
-        else if (r > 150 && g > 120 && b < 70) {
-            // For standard Yellow/Orange
-            currentAspect = "YELLOW";
+        else if (r > 140 && g > 115 && b < 70) {
+            // Bright amber profile
+            rawAspect = (r + g > 410) ? "DOUBLE YELLOW" : "YELLOW";
         }
 
-        // --- DOUBLE YELLOW LOGIC (Mainly used in Railway Systems) ---
-        // If your "Double Yellow" physical setup involves two vertical lights, 
-        // a single center point won't see both. If it implies an ultra-bright localized 
-        // high-intensity amber hue, we handle it here by reading the brightness magnitude:
-        if (currentAspect === "YELLOW" && (r + g) > 420) {
-            currentAspect = "DOUBLE YELLOW";
-        }
-
-        // Aspect stability check (must persist for 3 frames to avoid false triggers from camera noise)
-        if (currentAspect !== "NONE") {
-            aspectDurationCounter++;
-            if (aspectDurationCounter >= 3) {
-                triggerAlert(currentAspect);
+        // --- State Machine Filter ---
+        if (rawAspect === pendingAspect) {
+            stabilityCounter++;
+            if (stabilityCounter >= FRAMES_TO_CONFIRM) {
+                // Check if it is a brand new change
+                if (currentStableAspect !== pendingAspect) {
+                    handleAspectChange(currentStableAspect, pendingAspect);
+                    currentStableAspect = pendingAspect;
+                }
             }
         } else {
-            aspectDurationCounter = 0;
-            alertBox.style.display = 'none';
+            pendingAspect = rawAspect;
+            stabilityCounter = 0;
         }
     }
 
-    function triggerAlert(aspect) {
+    function handleAspectChange(oldState, newState) {
+        // We only want alerts when transitioning TO an active signal state
+        if (newState === "OFF/DARK" || newState === "UNKNOWN") {
+            alertBox.style.display = 'none';
+            return;
+        }
+
+        // Update visual warning UI
         alertBox.style.display = 'block';
+        let uiText = "";
         
-        switch(aspect) {
+        switch(newState) {
             case "RED":
-                alertBox.style.backgroundColor = "#dc3545";
-                alertBox.style.color = "#fff";
-                alertBox.innerText = "🚨 RED ASPECT";
-                break;
+                alertBox.style.backgroundColor = "#dc3545"; alertBox.style.color = "#fff";
+                uiText = "🚨 CHANGED TO RED"; break;
             case "YELLOW":
-                alertBox.style.backgroundColor = "#ffc107";
-                alertBox.style.color = "#000";
-                alertBox.innerText = "⚠️ SINGLE YELLOW ASPECT";
-                break;
+                alertBox.style.backgroundColor = "#ffc107"; alertBox.style.color = "#000";
+                uiText = "⚠️ CHANGED TO YELLOW"; break;
             case "DOUBLE YELLOW":
-                alertBox.style.backgroundColor = "#ff9f0a";
-                alertBox.style.color = "#000";
-                alertBox.innerText = "⚠️⚠️ DOUBLE YELLOW ASPECT";
-                break;
+                alertBox.style.backgroundColor = "#ff9f0a"; alertBox.style.color = "#000";
+                uiText = "⚠️⚠️ CHANGED TO DOUBLE YELLOW"; break;
             case "GREEN":
-                alertBox.style.backgroundColor = "#28a745";
-                alertBox.style.color = "#fff";
-                alertBox.innerText = "🍏 GREEN ASPECT";
-                break;
+                alertBox.style.backgroundColor = "#28a745"; alertBox.style.color = "#fff";
+                uiText = "🍏 CHANGED TO GREEN"; break;
         }
+        
+        alertBox.innerText = uiText;
 
-        // VOICE ALERT: Speaks the aspect out loud whenever it changes!
-        if (lastSpokenAspect !== aspect) {
-            lastSpokenAspect = aspect;
-            
-            // Play quick chime sound
-            alertSound.play().catch(() => {});
+        // Log the change dynamically on-screen
+        const timestamp = new Date().toLocaleTimeString();
+        historyDiv.innerHTML += `[${timestamp}] State changed: ${oldState} ➔ ${newState}<br>`;
+        historyDiv.scrollTop = historyDiv.scrollHeight;
 
-            // Speak the state aloud so the user doesn't have to look at the screen
-            let speechString = aspect + " Signal Detected";
-            let utterance = new SpeechSynthesisUtterance(speechString);
-            utterance.rate = 1.1;
-            window.speechSynthesis.speak(utterance);
-        }
+        // Execute Audio Alerts
+        alertSound.currentTime = 0;
+        alertSound.play().catch(() => {});
+
+        // Speak the transition aloud clearly
+        let speechString = `Signal changed to ${newState}`;
+        let utterance = new SpeechSynthesisUtterance(speechString);
+        utterance.rate = 1.15;
+        window.speechSynthesis.speak(utterance);
     }
 </script>
 </body>
