@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Continuous Signal Color Detector</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            background-color: #1e1e24;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: #2a2a35;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        #video {
+            width: 100%;
+            max-width: 480px;
+            border: 3px solid #444;
+            border-radius: 8px;
+            background-color: #000;
+            transform: scaleX(-1); /* Mirrors the camera for natural viewing */
+        }
+        .btn-container {
+            margin: 20px 0;
+        }
+        .btn {
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            margin: 0 10px;
+            cursor: pointer;
+            border: none;
+            border-radius: 25px;
+            transition: all 0.2s ease;
+        }
+        .start { background-color: #2eb85c; color: white; }
+        .start:hover { background-color: #218838; }
+        .stop { background-color: #e55353; color: white; }
+        .stop:hover { background-color: #c9302c; }
+        .btn:disabled { background-color: #555; color: #aaa; cursor: not-allowed; }
+        
+        #status { font-size: 1.1em; color: #bbb; margin: 15px 0; }
+        
+        #alert-box {
+            font-size: 24px;
+            font-weight: bold;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+            animation: pulse 1s infinite alternate;
+        }
+        @keyframes pulse {
+            from { opacity: 0.8; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Signal Color Detector</h2>
+    <p>Point your camera at the signal. The app analyzes the center pixel continuously.</p>
+    
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <div class="btn-container">
+        <button class="btn start" id="startBtn" onclick="startMonitoring()">Start Monitoring</button>
+        <button class="btn stop" id="stopBtn" onclick="stopMonitoring()" disabled>Stop / Interrupt</button>
+    </div>
+
+    <div id="status">Status: Idle</div>
+    <div id="alert-box"></div>
+</div>
+
+<audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg" preload="auto" loop></audio>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusDiv = document.getElementById('status');
+    const alertBox = document.getElementById('alert-box');
+    const alertSound = document.getElementById('alertSound');
+
+    let isMonitoring = false;
+    let streamRef = null;
+    let animationFrameId = null;
+
+    async function startMonitoring() {
+        if (isMonitoring) return;
+        isMonitoring = true;
+        
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusDiv.innerText = "Status: Initializing camera...";
+
+        try {
+            // Request back camera if on mobile, otherwise default camera
+            streamRef = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment' } 
+            });
+            video.srcObject = streamRef;
+            statusDiv.innerText = "Status: Actively Monitoring...";
+            
+            // Start the continuous processing loop
+            analyzeFrame();
+        } catch (err) {
+            statusDiv.innerText = "Error: Camera access denied or unavailable.";
+            resetUI();
+        }
+    }
+
+    function stopMonitoring() {
+        isMonitoring = false;
+        statusDiv.innerText = "Status: Interrupted by User.";
+        
+        // Stop the camera stream entirely
+        if (streamRef) {
+            streamRef.getTracks().forEach(track => track.stop());
+        }
+        
+        // Stop the infinite loop
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+        
+        // Turn off sound and hide alert boxes
+        alertSound.pause();
+        alertSound.currentTime = 0;
+        alertBox.style.display = 'none';
+        
+        resetUI();
+    }
+
+    function resetUI() {
+        isMonitoring = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+    }
+
+    function analyzeFrame() {
+        if (!isMonitoring) return;
+
+        if (video.videoWidth > 0) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            // Draw current camera frame onto hidden canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Get the RGB values of the exact middle pixel
+            const centerX = Math.floor(canvas.width / 2);
+            const centerY = Math.floor(canvas.height / 2);
+            const pixel = ctx.getImageData(centerX, centerY, 1, 1).data;
+            
+            const r = pixel[0];
+            const g = pixel[1];
+            const b = pixel[2];
+
+            processSignal(r, g, b);
+        }
+
+        // Loops infinitely every frame (~60 times a second) until interrupted
+        animationFrameId = requestAnimationFrame(analyzeFrame);
+    }
+
+    function processSignal(r, g, b) {
+        // Simple color recognition logic
+        // Red Signal: High Red, lower Green/Blue
+        if (r > 160 && g < 90 && b < 90) {
+            triggerAlert("🚨 RED SIGNAL DETECTED", "#dc3545");
+        } 
+        // Green Signal: High Green, lower Red/Blue
+        else if (g > 150 && r < 100 && b < 120) {
+            triggerAlert("🍏 GREEN SIGNAL DETECTED", "#28a745");
+        } 
+        // Yellow/Orange Signal: High Red and Green, low Blue
+        else if (r > 180 && g > 150 && b < 80) {
+            triggerAlert("⚠️ YELLOW SIGNAL DETECTED", "#ffc107");
+        } 
+        else {
+            // Clear alert if color drops out of range
+            alertBox.style.display = 'none';
+            alertSound.pause();
+        }
+    }
+
+    function triggerAlert(message, colorHex) {
+        alertBox.style.display = 'block';
+        alertBox.style.backgroundColor = colorHex;
+        alertBox.style.color = colorHex === "#ffc107" ? "#000" : "#fff"; // dark text for yellow
+        alertBox.innerText = message;
+
+        // Play alarm sound if not already playing
+        if (alertSound.paused) {
+            alertSound.play().catch(() => {
+                // Browsers block audio until the user clicks something. 
+                // Because they clicked "Start", this should work seamlessly.
+                console.log("Audio playback waiting for user interaction permission.");
+            });
+        }
+    }
+</script>
+</body>
+</html>
