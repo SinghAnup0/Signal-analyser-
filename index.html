@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stable Signal Tracker v2.0</title>
+    <title>Red Signal Off Tracker</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -37,7 +37,7 @@
             left: 50%;
             width: 35px;
             height: 35px;
-            border: 2px dashed #00ffff;
+            border: 2px dashed #ff3333; /* Red target circle */
             border-radius: 50%;
             transform: translate(-50%, -50%);
             pointer-events: none;
@@ -62,14 +62,16 @@
             border-radius: 8px;
             margin-top: 15px;
             display: none;
+            background-color: #dc3545;
+            color: #fff;
         }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>Stable Signal Tracker</h2>
-    <p>Awaiting steady light changes. Ignores camera noise.</p>
+    <h2>Red-to-Off Signal Tracker</h2>
+    <p>Aim the target circle at the RED LED. Alerts ONLY when it goes off.</p>
     
     <div class="video-wrapper">
         <video id="video" autoplay playsinline></video>
@@ -78,11 +80,11 @@
     <canvas id="canvas" style="display:none;"></canvas>
 
     <div>
-        <button class="btn start" id="startBtn" onclick="startTracking()">Start</button>
+        <button class="btn start" id="startBtn" onclick="startTracking()">Start Tracking</button>
         <button class="btn stop" id="stopBtn" onclick="stopTracking()" disabled>Stop</button>
     </div>
 
-    <div id="alert-box"></div>
+    <div id="alert-box">⚠️ RED SIGNAL IS OFF!</div>
 </div>
 
 <audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg" preload="auto"></audio>
@@ -100,17 +102,18 @@
     let streamRef = null;
     let animationFrameId = null;
     
-    // --- STABILITY FILTER LOGIC ---
-    let currentSignalState = "DARK"; // The current confirmed state
-    let candidateState = "DARK";     // What the camera *thinks* it sees right now
-    let stabilityFramesCounter = 0;   // How many frames the candidate color has lasted
-    const REQUIRED_STABLE_FRAMES = 15; // Must look exactly the same for 15 frames (~250ms) to trigger
+    // --- Specific Red-to-Off Logic States ---
+    let isRedActive = false;          // Tracks if a stable Red light was just seen
+    let candidateState = "DARK";      // What the camera currently reads
+    let stabilityFramesCounter = 0;   
+    const REQUIRED_STABLE_FRAMES = 12; // Prevents camera static noise flashes
 
     async function startTracking() {
         if (isTracking) return;
         isTracking = true;
         startBtn.disabled = true;
         stopBtn.disabled = false;
+        alertBox.style.display = 'none';
 
         try {
             streamRef = await navigator.mediaDevices.getUserMedia({ 
@@ -130,6 +133,7 @@
         stopBtn.disabled = true;
         alertBox.style.display = 'none';
         alertSound.pause();
+        isRedActive = false;
         
         if (streamRef) streamRef.getTracks().forEach(track => track.stop());
         if (animationFrameId) cancelAnimationFrame(animationFrameId);
@@ -143,6 +147,7 @@
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
+            // Average a 12x12 sample area inside the crosshairs
             const size = 12;
             const startX = Math.floor(canvas.width / 2) - 6;
             const startY = Math.floor(canvas.height / 2) - 6;
@@ -156,70 +161,48 @@
             g /= (imgData.length / 4);
             b /= (imgData.length / 4);
 
-            filterNoise(r, g, b);
+            processRedSignal(r, g, b);
         }
         animationFrameId = requestAnimationFrame(analyzeLoop);
     }
 
-    function filterNoise(r, g, b) {
-        let immediateDetectedState = "DARK";
+    function processRedSignal(r, g, b) {
+        // Tight threshold: Looks exclusively for a prominent RED LED emission spectrum
+        let immediateRead = (r > 135 && g < 80 && b < 80) ? "RED" : "DARK";
 
-        // Color boundaries for bright LED aspects
-        if (r > 140 && g < 75 && b < 75) {
-            immediateDetectedState = "RED";
-        } else if (g > 140 && r < 95 && b < 120) {
-            immediateDetectedState = "GREEN";
-        } else if (r > 150 && g > 125 && b < 70) {
-            immediateDetectedState = (r + g > 420) ? "DOUBLE YELLOW" : "YELLOW";
-        }
-
-        // --- Filter Core Logic ---
-        if (immediateDetectedState === candidateState) {
-            // The color is holding steady! Increment frame counter.
+        if (immediateRead === candidateState) {
             stabilityFramesCounter++;
             
-            // If it passes our safety check threshold
             if (stabilityFramesCounter >= REQUIRED_STABLE_FRAMES) {
-                // Check if this stable color is completely different from our locked state
-                if (candidateState !== currentSignalState) {
-                    triggerAlert(currentSignalState, candidateState);
-                    currentSignalState = candidateState; // Lock in the new state
+                
+                // Case 1: Red light turned on and is now stable.
+                if (candidateState === "RED" && !isRedActive) {
+                    isRedActive = true; 
+                    alertBox.style.display = 'none'; // Clear previous alert UI if any
+                }
+                
+                // Case 2: Red light was active, but has now stably gone DARK (Off)
+                else if (candidateState === "DARK" && isRedActive) {
+                    isRedActive = false; // Reset status
+                    triggerDropAlert();  // Fire the action!
                 }
             }
         } else {
-            // A different color or dark frame flickered in, reset our validation check
-            candidateState = immediateDetectedState;
+            candidateState = immediateRead;
             stabilityFramesCounter = 0;
         }
     }
 
-    function triggerAlert(oldState, newState) {
+    function triggerDropAlert() {
+        // Display notification on screen
         alertBox.style.display = 'block';
-        
-        if (newState === "DARK") {
-            alertBox.style.backgroundColor = "#444444";
-            alertBox.style.color = "#fff";
-            alertBox.innerText = `⚠️ SIGNAL WENT OFF (From ${oldState})`;
-        } else {
-            switch(newState) {
-                case "RED": alertBox.style.backgroundColor = "#dc3545"; alertBox.style.color = "#fff"; break;
-                case "YELLOW": alertBox.style.backgroundColor = "#ffc107"; alertBox.style.color = "#000"; break;
-                case "DOUBLE YELLOW": alertBox.style.backgroundColor = "#ff9f0a"; alertBox.style.color = "#000"; break;
-                case "GREEN": alertBox.style.backgroundColor = "#28a745"; alertBox.style.color = "#fff"; break;
-            }
-            alertBox.innerText = `🚨 CHANGED TO ${newState}`;
-        }
 
-        // Play Beep
+        // 1. Play the beep alarm
         alertSound.currentTime = 0;
         alertSound.play().catch(() => {});
 
-        // Speak the alert text out loud
-        let speechText = (newState === "DARK") 
-            ? `Signal went off from ${oldState}` 
-            : `Signal changed to ${newState}`;
-            
-        let utterance = new SpeechSynthesisUtterance(speechText);
+        // 2. Speak the exact condition explicitly once
+        let utterance = new SpeechSynthesisUtterance("Red signal went off");
         window.speechSynthesis.speak(utterance);
     }
 </script>
