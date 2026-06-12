@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Signal Change Detector v2</title>
+    <title>Stable Signal Tracker v2.0</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -31,7 +31,6 @@
             border-radius: 8px;
             background-color: #000;
         }
-        /* Target circle for aiming */
         .reticle {
             position: absolute;
             top: 50%;
@@ -69,7 +68,8 @@
 <body>
 
 <div class="container">
-    <h2>Signal Tracker</h2>
+    <h2>Stable Signal Tracker</h2>
+    <p>Awaiting steady light changes. Ignores camera noise.</p>
     
     <div class="video-wrapper">
         <video id="video" autoplay playsinline></video>
@@ -100,7 +100,11 @@
     let streamRef = null;
     let animationFrameId = null;
     
-    let currentSignalState = "DARK"; // Tracks the last confirmed state
+    // --- STABILITY FILTER LOGIC ---
+    let currentSignalState = "DARK"; // The current confirmed state
+    let candidateState = "DARK";     // What the camera *thinks* it sees right now
+    let stabilityFramesCounter = 0;   // How many frames the candidate color has lasted
+    const REQUIRED_STABLE_FRAMES = 15; // Must look exactly the same for 15 frames (~250ms) to trigger
 
     async function startTracking() {
         if (isTracking) return;
@@ -139,10 +143,9 @@
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            // Read 10x10 area inside the center circle
-            const size = 10;
-            const startX = Math.floor(canvas.width / 2) - 5;
-            const startY = Math.floor(canvas.height / 2) - 5;
+            const size = 12;
+            const startX = Math.floor(canvas.width / 2) - 6;
+            const startY = Math.floor(canvas.height / 2) - 6;
             const imgData = ctx.getImageData(startX, startY, size, size).data;
             
             let r = 0, g = 0, b = 0;
@@ -153,34 +156,46 @@
             g /= (imgData.length / 4);
             b /= (imgData.length / 4);
 
-            checkStateChange(r, g, b);
+            filterNoise(r, g, b);
         }
         animationFrameId = requestAnimationFrame(analyzeLoop);
     }
 
-    function checkStateChange(r, g, b) {
-        let detectedState = "DARK";
+    function filterNoise(r, g, b) {
+        let immediateDetectedState = "DARK";
 
         // Color boundaries for bright LED aspects
-        if (r > 130 && g < 80 && b < 80) {
-            detectedState = "RED";
-        } else if (g > 130 && r < 100 && b < 120) {
-            detectedState = "GREEN";
-        } else if (r > 140 && g > 115 && b < 70) {
-            detectedState = (r + g > 410) ? "DOUBLE YELLOW" : "YELLOW";
+        if (r > 140 && g < 75 && b < 75) {
+            immediateDetectedState = "RED";
+        } else if (g > 140 && r < 95 && b < 120) {
+            immediateDetectedState = "GREEN";
+        } else if (r > 150 && g > 125 && b < 70) {
+            immediateDetectedState = (r + g > 420) ? "DOUBLE YELLOW" : "YELLOW";
         }
 
-        // IF THE STATE CHANGED (e.g., RED ➔ DARK, or RED ➔ GREEN)
-        if (detectedState !== currentSignalState) {
-            triggerAlert(currentSignalState, detectedState);
-            currentSignalState = detectedState; // Update memory to the new state
+        // --- Filter Core Logic ---
+        if (immediateDetectedState === candidateState) {
+            // The color is holding steady! Increment frame counter.
+            stabilityFramesCounter++;
+            
+            // If it passes our safety check threshold
+            if (stabilityFramesCounter >= REQUIRED_STABLE_FRAMES) {
+                // Check if this stable color is completely different from our locked state
+                if (candidateState !== currentSignalState) {
+                    triggerAlert(currentSignalState, candidateState);
+                    currentSignalState = candidateState; // Lock in the new state
+                }
+            }
+        } else {
+            // A different color or dark frame flickered in, reset our validation check
+            candidateState = immediateDetectedState;
+            stabilityFramesCounter = 0;
         }
     }
 
     function triggerAlert(oldState, newState) {
         alertBox.style.display = 'block';
         
-        // Custom styling based on what the signal changed to
         if (newState === "DARK") {
             alertBox.style.backgroundColor = "#444444";
             alertBox.style.color = "#fff";
@@ -195,11 +210,11 @@
             alertBox.innerText = `🚨 CHANGED TO ${newState}`;
         }
 
-        // 1. Play Alarm Beep Sound
+        // Play Beep
         alertSound.currentTime = 0;
         alertSound.play().catch(() => {});
 
-        // 2. Voice announcement of the exact change
+        // Speak the alert text out loud
         let speechText = (newState === "DARK") 
             ? `Signal went off from ${oldState}` 
             : `Signal changed to ${newState}`;
