@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Continuous Signal Color Detector</title>
+    <title>LED Traffic Light Signal Detector</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             text-align: center;
-            background-color: #1e1e24;
+            background-color: #121214;
             color: #fff;
             margin: 0;
             padding: 20px;
@@ -16,22 +16,36 @@
         .container {
             max-width: 600px;
             margin: 0 auto;
-            background: #2a2a35;
-            padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            background: #1c1c24;
+            padding: 25px;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        }
+        .video-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+            max-width: 480px;
         }
         #video {
             width: 100%;
-            max-width: 480px;
-            border: 3px solid #444;
+            border: 3px solid #333;
             border-radius: 8px;
             background-color: #000;
-            transform: scaleX(-1); /* Mirrors the camera for natural viewing */
         }
-        .btn-container {
-            margin: 20px 0;
+        /* Reticle to help the user aim at the traffic light */
+        .reticle {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 40px;
+            height: 40px;
+            border: 2px dashed #00ffff;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
         }
+        .btn-container { margin: 20px 0; }
         .btn {
             padding: 12px 30px;
             font-size: 16px;
@@ -40,38 +54,33 @@
             cursor: pointer;
             border: none;
             border-radius: 25px;
-            transition: all 0.2s ease;
         }
         .start { background-color: #2eb85c; color: white; }
-        .start:hover { background-color: #218838; }
         .stop { background-color: #e55353; color: white; }
-        .stop:hover { background-color: #c9302c; }
-        .btn:disabled { background-color: #555; color: #aaa; cursor: not-allowed; }
+        .btn:disabled { background-color: #444; color: #888; cursor: not-allowed; }
         
-        #status { font-size: 1.1em; color: #bbb; margin: 15px 0; }
+        #status { font-size: 1.1em; color: #aaa; margin: 10px 0; }
         
         #alert-box {
-            font-size: 24px;
+            font-size: 26px;
             font-weight: bold;
-            padding: 20px;
+            padding: 25px;
             border-radius: 8px;
             margin-top: 20px;
             display: none;
-            animation: pulse 1s infinite alternate;
-        }
-        @keyframes pulse {
-            from { opacity: 0.8; }
-            to { opacity: 1; }
         }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>Signal Color Detector</h2>
-    <p>Point your camera at the signal. The app analyzes the center pixel continuously.</p>
+    <h2>LED Signal Aspect Detector</h2>
+    <p>Align the target circle directly over the LED aspect.</p>
     
-    <video id="video" autoplay playsinline></video>
+    <div class="video-wrapper">
+        <video id="video" autoplay playsinline></video>
+        <div class="reticle"></div>
+    </div>
     <canvas id="canvas" style="display:none;"></canvas>
 
     <div class="btn-container">
@@ -83,7 +92,7 @@
     <div id="alert-box"></div>
 </div>
 
-<audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg" preload="auto" loop></audio>
+<audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg" preload="auto"></audio>
 
 <script>
     const video = document.getElementById('video');
@@ -98,27 +107,26 @@
     let isMonitoring = false;
     let streamRef = null;
     let animationFrameId = null;
+    let lastSpokenAspect = ""; 
+    let aspectDurationCounter = 0; // Helps filter out flickering noise
 
     async function startMonitoring() {
         if (isMonitoring) return;
         isMonitoring = true;
-        
         startBtn.disabled = true;
         stopBtn.disabled = false;
-        statusDiv.innerText = "Status: Initializing camera...";
+        statusDiv.innerText = "Status: Accessing camera...";
 
         try {
-            // Request back camera if on mobile, otherwise default camera
+            // Note: Removed mirror scaling (scaleX) to keep orientation true for physical layout tracking
             streamRef = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment' } 
+                video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } 
             });
             video.srcObject = streamRef;
-            statusDiv.innerText = "Status: Actively Monitoring...";
-            
-            // Start the continuous processing loop
+            statusDiv.innerText = "Status: Monitoring Signal Aspects...";
             analyzeFrame();
         } catch (err) {
-            statusDiv.innerText = "Error: Camera access denied or unavailable.";
+            statusDiv.innerText = "Error: Camera unavailable.";
             resetUI();
         }
     }
@@ -126,22 +134,12 @@
     function stopMonitoring() {
         isMonitoring = false;
         statusDiv.innerText = "Status: Interrupted by User.";
+        if (streamRef) streamRef.getTracks().forEach(track => track.stop());
+        if (animationFrameId) cancelAnimationFrame(animationFrameId);
         
-        // Stop the camera stream entirely
-        if (streamRef) {
-            streamRef.getTracks().forEach(track => track.stop());
-        }
-        
-        // Stop the infinite loop
-        if (animationFrameId) {
-            cancelAnimationFrame(animationFrameId);
-        }
-        
-        // Turn off sound and hide alert boxes
         alertSound.pause();
-        alertSound.currentTime = 0;
         alertBox.style.display = 'none';
-        
+        lastSpokenAspect = "";
         resetUI();
     }
 
@@ -157,60 +155,108 @@
         if (video.videoWidth > 0) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
-            
-            // Draw current camera frame onto hidden canvas
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            // Get the RGB values of the exact middle pixel
-            const centerX = Math.floor(canvas.width / 2);
-            const centerY = Math.floor(canvas.height / 2);
-            const pixel = ctx.getImageData(centerX, centerY, 1, 1).data;
+            // Define a small 10x10 pixel bounding area at the center to sample the light safely
+            const size = 10;
+            const startX = Math.floor(canvas.width / 2) - (size / 2);
+            const startY = Math.floor(canvas.height / 2) - (size / 2);
             
-            const r = pixel[0];
-            const g = pixel[1];
-            const b = pixel[2];
+            const imgData = ctx.getImageData(startX, startY, size, size).data;
+            
+            let totalR = 0, totalG = 0, totalB = 0;
+            const pixelCount = imgData.length / 4;
 
-            processSignal(r, g, b);
+            for (let i = 0; i < imgData.length; i += 4) {
+                totalR += imgData[i];
+                totalG += imgData[i+1];
+                totalB += imgData[i+2];
+            }
+
+            // Average color inside our target reticle
+            const r = totalR / pixelCount;
+            const g = totalG / pixelCount;
+            const b = totalB / pixelCount;
+
+            processLEDAspect(r, g, b);
         }
 
-        // Loops infinitely every frame (~60 times a second) until interrupted
         animationFrameId = requestAnimationFrame(analyzeFrame);
     }
 
-    function processSignal(r, g, b) {
-        // Simple color recognition logic
-        // Red Signal: High Red, lower Green/Blue
-        if (r > 160 && g < 90 && b < 90) {
-            triggerAlert("🚨 RED SIGNAL DETECTED", "#dc3545");
+    function processLEDAspect(r, g, b) {
+        let currentAspect = "NONE";
+
+        // Advanced color-ratio thresholds for intensely bright LED emissions
+        if (r > 140 && g < 75 && b < 75) {
+            currentAspect = "RED";
         } 
-        // Green Signal: High Green, lower Red/Blue
-        else if (g > 150 && r < 100 && b < 120) {
-            triggerAlert("🍏 GREEN SIGNAL DETECTED", "#28a745");
+        else if (g > 140 && r < 90 && b < 120) {
+            currentAspect = "GREEN";
         } 
-        // Yellow/Orange Signal: High Red and Green, low Blue
-        else if (r > 180 && g > 150 && b < 80) {
-            triggerAlert("⚠️ YELLOW SIGNAL DETECTED", "#ffc107");
-        } 
-        else {
-            // Clear alert if color drops out of range
+        else if (r > 150 && g > 120 && b < 70) {
+            // For standard Yellow/Orange
+            currentAspect = "YELLOW";
+        }
+
+        // --- DOUBLE YELLOW LOGIC (Mainly used in Railway Systems) ---
+        // If your "Double Yellow" physical setup involves two vertical lights, 
+        // a single center point won't see both. If it implies an ultra-bright localized 
+        // high-intensity amber hue, we handle it here by reading the brightness magnitude:
+        if (currentAspect === "YELLOW" && (r + g) > 420) {
+            currentAspect = "DOUBLE YELLOW";
+        }
+
+        // Aspect stability check (must persist for 3 frames to avoid false triggers from camera noise)
+        if (currentAspect !== "NONE") {
+            aspectDurationCounter++;
+            if (aspectDurationCounter >= 3) {
+                triggerAlert(currentAspect);
+            }
+        } else {
+            aspectDurationCounter = 0;
             alertBox.style.display = 'none';
-            alertSound.pause();
         }
     }
 
-    function triggerAlert(message, colorHex) {
+    function triggerAlert(aspect) {
         alertBox.style.display = 'block';
-        alertBox.style.backgroundColor = colorHex;
-        alertBox.style.color = colorHex === "#ffc107" ? "#000" : "#fff"; // dark text for yellow
-        alertBox.innerText = message;
+        
+        switch(aspect) {
+            case "RED":
+                alertBox.style.backgroundColor = "#dc3545";
+                alertBox.style.color = "#fff";
+                alertBox.innerText = "🚨 RED ASPECT";
+                break;
+            case "YELLOW":
+                alertBox.style.backgroundColor = "#ffc107";
+                alertBox.style.color = "#000";
+                alertBox.innerText = "⚠️ SINGLE YELLOW ASPECT";
+                break;
+            case "DOUBLE YELLOW":
+                alertBox.style.backgroundColor = "#ff9f0a";
+                alertBox.style.color = "#000";
+                alertBox.innerText = "⚠️⚠️ DOUBLE YELLOW ASPECT";
+                break;
+            case "GREEN":
+                alertBox.style.backgroundColor = "#28a745";
+                alertBox.style.color = "#fff";
+                alertBox.innerText = "🍏 GREEN ASPECT";
+                break;
+        }
 
-        // Play alarm sound if not already playing
-        if (alertSound.paused) {
-            alertSound.play().catch(() => {
-                // Browsers block audio until the user clicks something. 
-                // Because they clicked "Start", this should work seamlessly.
-                console.log("Audio playback waiting for user interaction permission.");
-            });
+        // VOICE ALERT: Speaks the aspect out loud whenever it changes!
+        if (lastSpokenAspect !== aspect) {
+            lastSpokenAspect = aspect;
+            
+            // Play quick chime sound
+            alertSound.play().catch(() => {});
+
+            // Speak the state aloud so the user doesn't have to look at the screen
+            let speechString = aspect + " Signal Detected";
+            let utterance = new SpeechSynthesisUtterance(speechString);
+            utterance.rate = 1.1;
+            window.speechSynthesis.speak(utterance);
         }
     }
 </script>
