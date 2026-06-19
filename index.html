@@ -5,74 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Red Signal Off Tracker</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            background-color: #121214;
-            color: #fff;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 500px;
-            margin: 0 auto;
-            background: #1c1c24;
-            padding: 20px;
-            border-radius: 12px;
-        }
-        .video-wrapper {
-            position: relative;
-            display: inline-block;
-            width: 100%;
-        }
-        #video {
-            width: 100%;
-            border: 2px solid #444;
-            border-radius: 8px;
-            background-color: #000;
-        }
-        .reticle {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 35px;
-            height: 35px;
-            border: 2px dashed #ff3333; /* Red target circle */
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
-            pointer-events: none;
-        }
-        .btn {
-            padding: 12px 25px;
-            font-size: 16px;
-            font-weight: bold;
-            margin: 10px;
-            cursor: pointer;
-            border: none;
-            border-radius: 20px;
-        }
-        .start { background-color: #2eb85c; color: white; }
-        .stop { background-color: #e55353; color: white; }
-        .btn:disabled { background-color: #444; color: #888; cursor: not-allowed; }
-        
-        #alert-box {
-            font-size: 24px;
-            font-weight: bold;
-            padding: 20px;
-            border-radius: 8px;
-            margin-top: 15px;
-            display: none;
-            background-color: #dc3545;
-            color: #fff;
-        }
+        body { font-family: Arial, sans-serif; text-align: center; background-color: #121214; color: #fff; margin: 0; padding: 20px; }
+        .container { max-width: 500px; margin: 0 auto; background: #1c1c24; padding: 20px; border-radius: 12px; }
+        .video-wrapper { position: relative; display: inline-block; width: 100%; }
+        #video { width: 100%; border: 2px solid #444; border-radius: 8px; background-color: #000; }
+        .reticle { position: absolute; top: 50%; left: 50%; width: 50px; height: 50px; border: 2px dashed #ff3333; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+        .btn { padding: 12px 20px; font-size: 14px; font-weight: bold; margin: 5px; cursor: pointer; border: none; border-radius: 20px; }
+        .start { background-color: #2eb85c; }
+        .stop { background-color: #e55353; }
+        .reset { background-color: #f39c12; }
+        .btn:disabled { background-color: #444; cursor: not-allowed; }
+        #alert-box { font-size: 20px; padding: 15px; margin-top: 15px; display: none; background-color: #dc3545; border-radius: 8px; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>Red-to-Off Signal Tracker</h2>
-    <p>Aim the target circle at the RED LED. Alerts ONLY when it goes off.</p>
-    
+    <h2>Red Signal Tracker</h2>
     <div class="video-wrapper">
         <video id="video" autoplay playsinline></video>
         <div class="reticle"></div>
@@ -80,130 +29,73 @@
     <canvas id="canvas" style="display:none;"></canvas>
 
     <div>
-        <button class="btn start" id="startBtn" onclick="startTracking()">Start Tracking</button>
+        <button class="btn start" id="startBtn" onclick="startTracking()">Start</button>
         <button class="btn stop" id="stopBtn" onclick="stopTracking()" disabled>Stop</button>
+        <button class="btn reset" id="resetBtn" onclick="resetTracker()">Reset Alert</button>
     </div>
 
-    <div id="alert-box">⚠️ RED SIGNAL IS OFF!</div>
+    <div id="alert-box">⚠️ SIGNAL IS OFF!</div>
 </div>
 
 <audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg" preload="auto"></audio>
 
 <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const alertBox = document.getElementById('alert-box');
-    const alertSound = document.getElementById('alertSound');
-
-    let isTracking = false;
-    let streamRef = null;
-    let animationFrameId = null;
+    const video = document.getElementById('video'), canvas = document.getElementById('canvas'), ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn'), stopBtn = document.getElementById('stopBtn'), alertBox = document.getElementById('alert-box'), alertSound = document.getElementById('alertSound');
     
-    // --- Specific Red-to-Off Logic States ---
-    let isRedActive = false;          // Tracks if a stable Red light was just seen
-    let candidateState = "DARK";      // What the camera currently reads
-    let stabilityFramesCounter = 0;   
-    const REQUIRED_STABLE_FRAMES = 12; // Prevents camera static noise flashes
+    let isTracking = false, streamRef = null, isRedActive = false, candidateState = "DARK", stabilityFramesCounter = 0;
+    const REQUIRED_STABLE_FRAMES = 10;
 
     async function startTracking() {
-        if (isTracking) return;
-        isTracking = true;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        alertBox.style.display = 'none';
-
+        isTracking = true; startBtn.disabled = true; stopBtn.disabled = false;
         try {
-            streamRef = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment' } 
-            });
+            streamRef = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
             video.srcObject = streamRef;
             analyzeLoop();
-        } catch (err) {
-            alert("Camera error: " + err.message);
-            stopTracking();
-        }
+        } catch (err) { alert("Camera Error: " + err.message); stopTracking(); }
     }
 
     function stopTracking() {
-        isTracking = false;
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
+        isTracking = false; startBtn.disabled = false; stopBtn.disabled = true;
+        if (streamRef) streamRef.getTracks().forEach(t => t.stop());
+    }
+
+    function resetTracker() {
         alertBox.style.display = 'none';
-        alertSound.pause();
-        isRedActive = false;
-        
-        if (streamRef) streamRef.getTracks().forEach(track => track.stop());
-        if (animationFrameId) cancelAnimationFrame(animationFrameId);
+        alertSound.pause(); alertSound.currentTime = 0;
+        window.speechSynthesis.cancel();
+        isRedActive = true; // Pretend it's active so it doesn't trigger immediately
     }
 
     function analyzeLoop() {
         if (!isTracking) return;
-
         if (video.videoWidth > 0) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
-            // Average a 12x12 sample area inside the crosshairs
-            const size = 12;
-            const startX = Math.floor(canvas.width / 2) - 6;
-            const startY = Math.floor(canvas.height / 2) - 6;
-            const imgData = ctx.getImageData(startX, startY, size, size).data;
-            
-            let r = 0, g = 0, b = 0;
-            for (let i = 0; i < imgData.length; i += 4) {
-                r += imgData[i]; g += imgData[i+1]; b += imgData[i+2];
-            }
-            r /= (imgData.length / 4);
-            g /= (imgData.length / 4);
-            b /= (imgData.length / 4);
-
-            processRedSignal(r, g, b);
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+            const data = ctx.getImageData(canvas.width/2 - 10, canvas.height/2 - 10, 20, 20).data;
+            let r=0, g=0, b=0;
+            for (let i=0; i<data.length; i+=4) { r+=data[i]; g+=data[i+1]; b+=data[i+2]; }
+            processRedSignal(r/(data.length/4), g/(data.length/4), b/(data.length/4));
         }
-        animationFrameId = requestAnimationFrame(analyzeLoop);
+        requestAnimationFrame(analyzeLoop);
     }
 
     function processRedSignal(r, g, b) {
-        // Tight threshold: Looks exclusively for a prominent RED LED emission spectrum
-        let immediateRead = (r > 135 && g < 80 && b < 80) ? "RED" : "DARK";
+        // Logic: Red is "RED" if it is stronger than Green + 30 AND Blue + 30
+        let current = (r > 80 && r > (g + 30) && r > (b + 30)) ? "RED" : "DARK";
 
-        if (immediateRead === candidateState) {
+        if (current === candidateState) {
             stabilityFramesCounter++;
-            
             if (stabilityFramesCounter >= REQUIRED_STABLE_FRAMES) {
-                
-                // Case 1: Red light turned on and is now stable.
-                if (candidateState === "RED" && !isRedActive) {
-                    isRedActive = true; 
-                    alertBox.style.display = 'none'; // Clear previous alert UI if any
-                }
-                
-                // Case 2: Red light was active, but has now stably gone DARK (Off)
-                else if (candidateState === "DARK" && isRedActive) {
-                    isRedActive = false; // Reset status
-                    triggerDropAlert();  // Fire the action!
+                if (current === "RED" && !isRedActive) isRedActive = true;
+                else if (current === "DARK" && isRedActive) {
+                    isRedActive = false;
+                    alertBox.style.display = 'block';
+                    alertSound.play().catch(()=>{});
+                    window.speechSynthesis.speak(new SpeechSynthesisUtterance("Signal went off"));
                 }
             }
-        } else {
-            candidateState = immediateRead;
-            stabilityFramesCounter = 0;
-        }
-    }
-
-    function triggerDropAlert() {
-        // Display notification on screen
-        alertBox.style.display = 'block';
-
-        // 1. Play the beep alarm
-        alertSound.currentTime = 0;
-        alertSound.play().catch(() => {});
-
-        // 2. Speak the exact condition explicitly once
-        let utterance = new SpeechSynthesisUtterance("Red signal went off");
-        window.speechSynthesis.speak(utterance);
+        } else { candidateState = current; stabilityFramesCounter = 0; }
     }
 </script>
 </body>
