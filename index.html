@@ -7,13 +7,13 @@
     <style>
         body { font-family: sans-serif; background: #121214; color: #fff; margin: 0; padding: 10px; touch-action: manipulation; }
         .container { max-width: 400px; margin: auto; }
-        .video-wrapper { position: relative; width: 100%; height: 250px; overflow: hidden; border-radius: 8px; border: 2px solid #444; }
+        .video-wrapper { position: relative; width: 100%; height: 300px; overflow: hidden; border-radius: 8px; border: 2px solid #444; }
         #video { width: 100%; height: 100%; object-fit: cover; background: #000; }
         .reticle { position: absolute; top: 50%; left: 50%; width: 50px; height: 50px; border: 3px dashed #ff0000; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
         .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
         .btn { padding: 15px; cursor: pointer; border: none; border-radius: 10px; font-weight: bold; font-size: 14px; }
-        #debug-log { background: #000; color: #0f0; font-family: monospace; font-size: 11px; height: 60px; overflow-y: scroll; padding: 5px; margin-top: 10px; border: 1px solid #444; }
-        #alert-box { display: none; background: #dc3545; padding: 15px; font-size: 18px; margin-top: 10px; border-radius: 8px; font-weight: bold; }
+        #debug-log { background: #000; color: #0f0; font-family: monospace; font-size: 13px; height: 60px; overflow-y: scroll; padding: 8px; margin-top: 10px; border: 1px solid #444; }
+        #alert-box { display: none; background: #dc3545; padding: 15px; font-size: 18px; margin-top: 10px; border-radius: 8px; font-weight: bold; text-align: center; }
     </style>
 </head>
 <body>
@@ -23,19 +23,25 @@
         <div class="reticle"></div>
     </div>
     <div class="controls">
-        <button class="btn" style="background:#2eb85c" onclick="startTracking()">Start</button>
-        <button class="btn" style="background:#e55353" onclick="location.reload()">Stop</button>
-        <button class="btn" style="background:#555" id="muteBtn" onclick="toggleMute()">Mute: OFF</button>
-        <button class="btn" style="background:#f39c12" onclick="resetTracker()">Reset</button>
+        <button class="btn" style="background:#2eb85c; color:#fff;" onclick="startTracking()">Start</button>
+        <button class="btn" style="background:#e55353; color:#fff;" onclick="location.reload()">Stop</button>
+        <button class="btn" style="background:#555; color:#fff;" id="muteBtn" onclick="toggleMute()">Mute: OFF</button>
+        <button class="btn" style="background:#f39c12; color:#fff;" onclick="resetTracker()">Reset Alert</button>
     </div>
     <div id="alert-box">⚠️ SIGNAL CHANGED!</div>
-    <div id="debug-log">Ready...</div>
+    <div id="debug-log">Ready... Press Start.</div>
 </div>
 
 <script>
-    const video = document.getElementById('video'), canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
-    const log = document.getElementById('debug-log'), alertBox = document.getElementById('alert-box');
-    let isTracking = false, isMuted = false, wasRedDetected = false;
+    const video = document.getElementById('video');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const log = document.getElementById('debug-log');
+    const alertBox = document.getElementById('alert-box');
+    
+    let isTracking = false;
+    let isMuted = false;
+    let wasRedDetected = false;
 
     async function startTracking() {
         try {
@@ -43,32 +49,78 @@
             video.srcObject = stream;
             isTracking = true;
             scan();
-        } catch (e) { alert("Camera Error: " + e.message); }
+        } catch (e) { 
+            alert("Camera Error: " + e.message); 
+        }
     }
 
     function scan() {
         if (!isTracking) return;
-        ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-        const imgData = ctx.getImageData(video.videoWidth/2 - 25, video.videoHeight/2 - 25, 50, 50).data;
-        let r=0, g=0, b=0;
-        for (let i = 0; i < imgData.length; i += 4) { r += imgData[i]; g += imgData[i+1]; b += imgData[i+2]; }
-        r /= (imgData.length/4); g /= (imgData.length/4); b /= (imgData.length/4);
 
-        log.innerHTML = `R:${Math.round(r)} G:${Math.round(g)} B:${Math.round(b)} | ${wasRedDetected?'RED':'OTHER'}`;
+        // CRITICAL FIX: Ensure the hidden canvas exactly matches the camera feed resolution
+        if (video.videoWidth > 0) {
+            if (canvas.width !== video.videoWidth) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            }
 
-        let isRed = (r > 70 && (r - g) > 30);
-        if (isRed && !wasRedDetected) { wasRedDetected = true; alertBox.style.display = 'none'; }
-        else if (!isRed && wasRedDetected) { wasRedDetected = false; triggerAlert(); }
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Sample a 50x50 area directly in the center
+            const size = 50;
+            const startX = Math.floor(canvas.width / 2 - size / 2);
+            const startY = Math.floor(canvas.height / 2 - size / 2);
+            
+            const imgData = ctx.getImageData(startX, startY, size, size).data;
+            let r = 0, g = 0, b = 0;
+            
+            for (let i = 0; i < imgData.length; i += 4) { 
+                r += imgData[i]; 
+                g += imgData[i+1]; 
+                b += imgData[i+2]; 
+            }
+            
+            let pixelCount = imgData.length / 4;
+            r /= pixelCount; 
+            g /= pixelCount; 
+            b /= pixelCount;
+
+            log.innerHTML = `R:${Math.round(r)} G:${Math.round(g)} B:${Math.round(b)} | State: ${wasRedDetected ? 'RED' : 'OTHER'}`;
+
+            // Detection Logic
+            let isRed = (r > 70 && (r - g) > 30);
+            
+            if (isRed && !wasRedDetected) { 
+                wasRedDetected = true; 
+                alertBox.style.display = 'none'; 
+            }
+            else if (!isRed && wasRedDetected) { 
+                wasRedDetected = false; 
+                triggerAlert(); 
+            }
+        }
+        
         requestAnimationFrame(scan);
     }
 
     function triggerAlert() {
         alertBox.style.display = 'block';
-        if (!isMuted) speechSynthesis.speak(new SpeechSynthesisUtterance("Signal changed"));
+        if (!isMuted) {
+            speechSynthesis.speak(new SpeechSynthesisUtterance("Signal changed"));
+        }
     }
 
-    function resetTracker() { alertBox.style.display = 'none'; wasRedDetected = true; }
-    function toggleMute() { isMuted = !isMuted; document.getElementById('muteBtn').innerText = isMuted ? "Mute: ON" : "Mute: OFF"; }
+    function resetTracker() { 
+        alertBox.style.display = 'none'; 
+        wasRedDetected = true; 
+        window.speechSynthesis.cancel();
+    }
+
+    function toggleMute() { 
+        isMuted = !isMuted; 
+        document.getElementById('muteBtn').innerText = isMuted ? "Mute: ON" : "Mute: OFF"; 
+        window.speechSynthesis.cancel();
+    }
 </script>
 </body>
 </html>
