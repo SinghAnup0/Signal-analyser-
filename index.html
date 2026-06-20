@@ -2,90 +2,84 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Signal Debugger</title>
+    <title>Multi-Signal Tracker</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background-color: #121214; color: #fff; margin: 0; padding: 10px; }
-        .container { max-width: 500px; margin: 0 auto; background: #1c1c24; padding: 15px; border-radius: 12px; }
+        body { font-family: sans-serif; background: #121214; color: #fff; text-align: center; }
+        .container { max-width: 600px; margin: auto; padding: 10px; }
         #video { width: 100%; border-radius: 8px; background: #000; }
-        .btn { padding: 10px 15px; margin: 5px; cursor: pointer; border: none; border-radius: 15px; font-weight: bold; }
-        #debug-log { background: #000; color: #0f0; padding: 10px; font-family: monospace; font-size: 12px; text-align: left; margin-top: 10px; height: 80px; overflow-y: scroll; border-radius: 5px; }
-        #alert-box { display: none; padding: 10px; background: #dc3545; margin-top: 10px; border-radius: 5px; }
+        .btn { padding: 10px 20px; margin: 5px; cursor: pointer; border-radius: 15px; border: none; font-weight: bold; }
+        #debug-log { background: #000; color: #0f0; font-family: monospace; font-size: 11px; height: 100px; overflow-y: scroll; text-align: left; padding: 5px; margin-top: 10px; }
+        #alert-box { display: none; background: #dc3545; padding: 20px; font-size: 20px; margin-top: 10px; }
     </style>
 </head>
 <body>
-
 <div class="container">
-    <h3>Signal Tracker</h3>
+    <h3>Multi-Signal Scanner</h3>
     <video id="video" autoplay playsinline></video>
     <canvas id="canvas" style="display:none;"></canvas>
-
     <div>
         <button class="btn" onclick="startTracking()">Start</button>
-        <button class="btn" onclick="stopTracking()">Stop</button>
-        <button class="btn" id="muteBtn" onclick="toggleMute()">Mute: OFF</button>
-        <button class="btn" onclick="resetTracker()">Reset</button>
+        <button class="btn" onclick="toggleMute()" id="muteBtn">Mute: OFF</button>
+        <button class="btn" onclick="resetTracker()">Reset Alert</button>
     </div>
-
     <div id="alert-box">⚠️ SIGNAL CHANGED!</div>
-    <div id="debug-log">Logs will appear here...</div>
+    <div id="debug-log">Scanning frame...</div>
 </div>
 
 <script>
     const video = document.getElementById('video'), canvas = document.getElementById('canvas'), ctx = canvas.getContext('2d');
-    const log = document.getElementById('debug-log'), muteBtn = document.getElementById('muteBtn');
-    let isMuted = false, isTracking = false, isRedActive = false;
-
-    function toggleMute() {
-        isMuted = !isMuted;
-        muteBtn.textContent = isMuted ? "Mute: ON" : "Mute: OFF";
-    }
-
-    function addLog(msg) {
-        log.innerHTML = msg + "<br>" + log.innerHTML;
-    }
+    const log = document.getElementById('debug-log'), alertBox = document.getElementById('alert-box');
+    let isTracking = false, isMuted = false, wasRedDetected = false;
 
     async function startTracking() {
-        isTracking = true;
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         video.srcObject = stream;
-        analyze();
+        isTracking = true;
+        scan();
     }
 
-    function analyze() {
+    function scan() {
         if (!isTracking) return;
         canvas.width = video.videoWidth; canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0);
-        const img = ctx.getImageData(canvas.width/2 - 10, canvas.height/2 - 10, 20, 20).data;
-        let r=0, g=0, b=0;
-        for (let i=0; i<img.length; i+=4) { r+=img[i]; g+=img[i+1]; b+=img[i+2]; }
-        r /= (img.length/4); g /= (img.length/4); b /= (img.length/4);
+        
+        // Grid scanning: Scan 10x10 sections of the screen to find ANY red signal
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let redFoundInFrame = false;
 
-        // Debug Log display
-        addLog(`R:${Math.round(r)} G:${Math.round(g)} B:${Math.round(b)}`);
-
-        // Detection Logic: A Yellow signal has high Red and high Green.
-        // If Red is no longer significantly greater than Green, it's not "Red".
-        let isRed = (r > 70 && (r - g) > 20); 
-
-        if (isRed && !isRedActive) isRedActive = true;
-        else if (!isRed && isRedActive) {
-            isRedActive = false;
-            triggerAlert();
+        for (let i = 0; i < imageData.length; i += 400) { // Step size = 100 pixels for speed
+            let r = imageData[i], g = imageData[i+1], b = imageData[i+2];
+            // Define Red: High red intensity, low green/blue
+            if (r > 150 && g < 100 && b < 100) {
+                redFoundInFrame = true;
+                break; // Found at least one red signal
+            }
         }
 
-        requestAnimationFrame(analyze);
+        updateState(redFoundInFrame);
+        requestAnimationFrame(scan);
+    }
+
+    function updateState(isRed) {
+        if (isRed && !wasRedDetected) {
+            wasRedDetected = true;
+            log.innerHTML = "Status: Red Signal Detected<br>" + log.innerHTML;
+        } else if (!isRed && wasRedDetected) {
+            wasRedDetected = false;
+            triggerAlert();
+        }
     }
 
     function triggerAlert() {
-        document.getElementById('alert-box').style.display = 'block';
+        alertBox.style.display = 'block';
         if (!isMuted) {
             speechSynthesis.speak(new SpeechSynthesisUtterance("Signal changed"));
         }
+        log.innerHTML = "<span style='color:red'>ALERT: Signal Lost!</span><br>" + log.innerHTML;
     }
 
-    function resetTracker() { document.getElementById('alert-box').style.display = 'none'; isRedActive = true; }
-    function stopTracking() { isTracking = false; }
+    function resetTracker() { alertBox.style.display = 'none'; wasRedDetected = true; }
+    function toggleMute() { isMuted = !isMuted; document.getElementById('muteBtn').innerText = isMuted ? "Mute: ON" : "Mute: OFF"; }
 </script>
 </body>
 </html>
