@@ -2,90 +2,88 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Signal Debugger</title>
+    <title>Signal Tracker with Reticle</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background-color: #121214; color: #fff; margin: 0; padding: 10px; }
-        .container { max-width: 500px; margin: 0 auto; background: #1c1c24; padding: 15px; border-radius: 12px; }
+        body { font-family: sans-serif; background: #121214; color: #fff; text-align: center; margin: 0; padding: 10px; }
+        .container { max-width: 500px; margin: auto; }
+        .video-wrapper { position: relative; display: inline-block; width: 100%; }
         #video { width: 100%; border-radius: 8px; background: #000; }
-        .btn { padding: 10px 15px; margin: 5px; cursor: pointer; border: none; border-radius: 15px; font-weight: bold; }
-        #debug-log { background: #000; color: #0f0; padding: 10px; font-family: monospace; font-size: 12px; text-align: left; margin-top: 10px; height: 80px; overflow-y: scroll; border-radius: 5px; }
-        #alert-box { display: none; padding: 10px; background: #dc3545; margin-top: 10px; border-radius: 5px; }
+        .reticle { position: absolute; top: 50%; left: 50%; width: 60px; height: 60px; border: 3px dashed #ff0000; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 0 10px #f00; }
+        .btn { padding: 12px 20px; margin: 5px; cursor: pointer; border-radius: 15px; border: none; font-weight: bold; }
+        #debug-log { background: #000; color: #0f0; font-family: monospace; font-size: 12px; height: 100px; overflow-y: scroll; text-align: left; padding: 10px; margin-top: 10px; border: 1px solid #444; }
+        #alert-box { display: none; background: #dc3545; padding: 15px; font-size: 20px; margin-top: 10px; border-radius: 8px; }
     </style>
 </head>
 <body>
-
 <div class="container">
-    <h3>Signal Tracker</h3>
-    <video id="video" autoplay playsinline></video>
+    <h3>Aim Circle at Target Signal</h3>
+    <div class="video-wrapper">
+        <video id="video" autoplay playsinline></video>
+        <div class="reticle"></div>
+    </div>
     <canvas id="canvas" style="display:none;"></canvas>
 
     <div>
-        <button class="btn" onclick="startTracking()">Start</button>
-        <button class="btn" onclick="stopTracking()">Stop</button>
-        <button class="btn" id="muteBtn" onclick="toggleMute()">Mute: OFF</button>
-        <button class="btn" onclick="resetTracker()">Reset</button>
+        <button class="btn" onclick="startTracking()" style="background:#2eb85c">Start</button>
+        <button class="btn" onclick="toggleMute()" id="muteBtn" style="background:#555">Mute: OFF</button>
+        <button class="btn" onclick="resetTracker()" style="background:#f39c12">Reset</button>
     </div>
 
     <div id="alert-box">⚠️ SIGNAL CHANGED!</div>
-    <div id="debug-log">Logs will appear here...</div>
+    <div id="debug-log">Waiting for start...</div>
 </div>
 
 <script>
     const video = document.getElementById('video'), canvas = document.getElementById('canvas'), ctx = canvas.getContext('2d');
-    const log = document.getElementById('debug-log'), muteBtn = document.getElementById('muteBtn');
-    let isMuted = false, isTracking = false, isRedActive = false;
-
-    function toggleMute() {
-        isMuted = !isMuted;
-        muteBtn.textContent = isMuted ? "Mute: ON" : "Mute: OFF";
-    }
-
-    function addLog(msg) {
-        log.innerHTML = msg + "<br>" + log.innerHTML;
-    }
+    const log = document.getElementById('debug-log'), alertBox = document.getElementById('alert-box');
+    let isTracking = false, isMuted = false, wasRedDetected = false;
 
     async function startTracking() {
-        isTracking = true;
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
         video.srcObject = stream;
-        analyze();
+        isTracking = true;
+        scan();
     }
 
-    function analyze() {
+    function scan() {
         if (!isTracking) return;
         canvas.width = video.videoWidth; canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0);
-        const img = ctx.getImageData(canvas.width/2 - 10, canvas.height/2 - 10, 20, 20).data;
+        
+        // Target the center 60x60 area (same as reticle)
+        const size = 60;
+        const imgData = ctx.getImageData(canvas.width/2 - size/2, canvas.height/2 - size/2, size, size).data;
+        
         let r=0, g=0, b=0;
-        for (let i=0; i<img.length; i+=4) { r+=img[i]; g+=img[i+1]; b+=img[i+2]; }
-        r /= (img.length/4); g /= (img.length/4); b /= (img.length/4);
+        for (let i = 0; i < imgData.length; i += 4) { r += imgData[i]; g += imgData[i+1]; b += imgData[i+2]; }
+        r /= (imgData.length/4); g /= (imgData.length/4); b /= (imgData.length/4);
 
-        // Debug Log display
-        addLog(`R:${Math.round(r)} G:${Math.round(g)} B:${Math.round(b)}`);
+        // Update Log
+        log.innerHTML = `R:${Math.round(r)} G:${Math.round(g)} B:${Math.round(b)} | State: ${wasRedDetected ? 'RED' : 'OTHER'}<br>` + log.innerHTML;
 
-        // Detection Logic: A Yellow signal has high Red and high Green.
-        // If Red is no longer significantly greater than Green, it's not "Red".
-        let isRed = (r > 70 && (r - g) > 20); 
+        // Logic: Red is "Red" if it's much brighter than Green
+        let isRed = (r > 80 && (r - g) > 30);
 
-        if (isRed && !isRedActive) isRedActive = true;
-        else if (!isRed && isRedActive) {
-            isRedActive = false;
+        if (isRed && !wasRedDetected) {
+            wasRedDetected = true;
+            alertBox.style.display = 'none';
+        } else if (!isRed && wasRedDetected) {
+            wasRedDetected = false;
             triggerAlert();
         }
 
-        requestAnimationFrame(analyze);
+        requestAnimationFrame(scan);
     }
 
     function triggerAlert() {
-        document.getElementById('alert-box').style.display = 'block';
+        alertBox.style.display = 'block';
         if (!isMuted) {
             speechSynthesis.speak(new SpeechSynthesisUtterance("Signal changed"));
         }
     }
 
-    function resetTracker() { document.getElementById('alert-box').style.display = 'none'; isRedActive = true; }
-    function stopTracking() { isTracking = false; }
+    function resetTracker() { alertBox.style.display = 'none'; wasRedDetected = true; }
+    function toggleMute() { isMuted = !isMuted; document.getElementById('muteBtn').innerText = isMuted ? "Mute: ON" : "Mute: OFF"; }
 </script>
 </body>
 </html>
